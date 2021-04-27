@@ -8,22 +8,33 @@ import java.util.concurrent.*;
 
 public abstract class SAbstractExecutorService implements ExecutorService {
 
+    /**
+     * 将Runnable 和Value 合成一个FutureTask
+     * 其中 value为 默认结果值 RunnableAdapter
+     */
     protected <T> RunnableFuture<T> newTaskFor(Runnable runnable, T value) {
         return new FutureTask<T>(runnable, value);
     }
 
+    /**
+     * 将Callable 包装为一个Future 能够获取结果的
+     */
     protected <T> RunnableFuture<T> newTaskFor(Callable<T> callable) {
         return new FutureTask<T>(callable);
     }
 
-
+    /**
+     * 提交一个runnable 其中 返回值为 null
+     */
     public Future<?> submit(Runnable task) {
         if (task == null) throw new NullPointerException();
         RunnableFuture<Void> ftask = newTaskFor(task, null);
         execute(ftask);
         return ftask;
     }
-
+    /**
+     * 提交一个runnable 其中 返回值为 预设值
+     */
     public <T> Future<T> submit(Runnable task, T result) {
         if (task == null) throw new NullPointerException();
         RunnableFuture<T> ftask = newTaskFor(task, result);
@@ -43,42 +54,38 @@ public abstract class SAbstractExecutorService implements ExecutorService {
             throws InterruptedException, ExecutionException, TimeoutException {
         if (tasks == null)
             throw new NullPointerException();
-        int ntasks = tasks.size();
+        int ntasks = tasks.size(); // 任务集合大小
         if (ntasks == 0)
             throw new IllegalArgumentException();
+        // 新建一个future集合
         ArrayList<Future<T>> futures = new ArrayList<Future<T>>(ntasks);
+        // 创建一个执行完成服务 , 内部有一个队列, 当任务执行完成后添加进去
         ExecutorCompletionService<T> ecs =
                 new ExecutorCompletionService<T>(this);
 
-        // For efficiency, especially in executors with limited
-        // parallelism, check to see if previously submitted tasks are
-        // done before submitting more of them. This interleaving
-        // plus the exception mechanics account for messiness of main
-        // loop.
-
         try {
-            // Record exceptions so that if we fail to obtain any
-            // result, we can throw the last exception we got.
             ExecutionException ee = null;
+            // 死亡线 如果设置时间 则为当前时间+延时时间  反之为0
             final long deadline = timed ? System.nanoTime() + nanos : 0L;
+            // 获取第一个任务
             Iterator<? extends Callable<T>> it = tasks.iterator();
-
-            // Start one task for sure; the rest incrementally
+            // 一定要开始一项任务；其余的逐渐增加
             futures.add(ecs.submit(it.next()));
             --ntasks;
             int active = 1;
 
             for (;;) {
+                // 抛出第一个任务 判断是否为null , 不为null 表示任务完成
                 Future<T> f = ecs.poll();
-                if (f == null) {
-                    if (ntasks > 0) {
-                        --ntasks;
+                if (f == null) { // 无任务
+                    if (ntasks > 0) { // 当前还有未执行任务
+                        --ntasks; // 添加执行
                         futures.add(ecs.submit(it.next()));
                         ++active;
                     }
-                    else if (active == 0)
+                    else if (active == 0) // 没有任务了
                         break;
-                    else if (timed) {
+                    else if (timed) { // 判断是否有时间的判断
                         f = ecs.poll(nanos, TimeUnit.NANOSECONDS);
                         if (f == null)
                             throw new TimeoutException();

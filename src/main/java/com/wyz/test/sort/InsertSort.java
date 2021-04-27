@@ -7,6 +7,9 @@ import java.util.Arrays;
 import java.util.Random;
 
 public class InsertSort {
+    /**
+     * 插入排序
+     */
     private static void insertTest() {
         final Integer[] array = new Integer[20];
         Random random = new Random();

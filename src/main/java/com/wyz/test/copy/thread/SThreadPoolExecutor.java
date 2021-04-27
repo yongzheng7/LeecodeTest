@@ -11,63 +11,7 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class SThreadPoolExecutor extends SAbstractExecutorService {
-    /**
-     * The main pool control state, ctl, is an atomic integer packing
-     * two conceptual fields
-     *   workerCount, indicating the effective number of threads
-     *   runState,    indicating whether running, shutting down etc
-     *
-     * In order to pack them into one int, we limit workerCount to
-     * (2^29)-1 (about 500 million) threads rather than (2^31)-1 (2
-     * billion) otherwise representable. If this is ever an issue in
-     * the future, the variable can be changed to be an AtomicLong,
-     * and the shift/mask constants below adjusted. But until the need
-     * arises, this code is a bit faster and simpler using an int.
-     *
-     * The workerCount is the number of workers that have been
-     * permitted to start and not permitted to stop.  The value may be
-     * transiently different from the actual number of live threads,
-     * for example when a ThreadFactory fails to create a thread when
-     * asked, and when exiting threads are still performing
-     * bookkeeping before terminating. The user-visible pool size is
-     * reported as the current size of the workers set.
-     *
-     * The runState provides the main lifecycle control, taking on values:
-     *
-     *   RUNNING:  Accept new tasks and process queued tasks
-     *   SHUTDOWN: Don't accept new tasks, but process queued tasks
-     *   STOP:     Don't accept new tasks, don't process queued tasks,
-     *             and interrupt in-progress tasks
-     *   TIDYING:  All tasks have terminated, workerCount is zero,
-     *             the thread transitioning to state TIDYING
-     *             will run the terminated() hook method
-     *   TERMINATED: terminated() has completed
-     *
-     * The numerical order among these values matters, to allow
-     * ordered comparisons. The runState monotonically increases over
-     * time, but need not hit each state. The transitions are:
-     *
-     * RUNNING -> SHUTDOWN
-     *    On invocation of shutdown(), perhaps implicitly in finalize()
-     * (RUNNING or SHUTDOWN) -> STOP
-     *    On invocation of shutdownNow()
-     * SHUTDOWN -> TIDYING
-     *    When both queue and pool are empty
-     * STOP -> TIDYING
-     *    When pool is empty
-     * TIDYING -> TERMINATED
-     *    When the terminated() hook method has completed
-     *
-     * Threads waiting in awaitTermination() will return when the
-     * state reaches TERMINATED.
-     *
-     * Detecting the transition from SHUTDOWN to TIDYING is less
-     * straightforward than you'd like because the queue may become
-     * empty after non-empty and vice versa during SHUTDOWN state, but
-     * we can only terminate if, after seeing that it is empty, we see
-     * that workerCount is 0 (which sometimes entails a recheck -- see
-     * below).
-     */
+
     private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
     private static final int COUNT_BITS = Integer.SIZE - 3;
     private static final int CAPACITY   = (1 << COUNT_BITS) - 1;
@@ -83,11 +27,6 @@ public class SThreadPoolExecutor extends SAbstractExecutorService {
     private static int runStateOf(int c)     { return c & ~CAPACITY; }
     private static int workerCountOf(int c)  { return c & CAPACITY; }
     private static int ctlOf(int rs, int wc) { return rs | wc; }
-
-    /*
-     * Bit field accessors that don't require unpacking ctl.
-     * These depend on the bit layout and on workerCount being never negative.
-     */
 
     private static boolean runStateLessThan(int c, int s) {
         return c < s;
@@ -124,200 +63,60 @@ public class SThreadPoolExecutor extends SAbstractExecutorService {
         do {} while (! compareAndDecrementWorkerCount(ctl.get()));
     }
 
-    /**
-     * The queue used for holding tasks and handing off to worker
-     * threads.  We do not require that workQueue.poll() returning
-     * null necessarily means that workQueue.isEmpty(), so rely
-     * solely on isEmpty to see if the queue is empty (which we must
-     * do for example when deciding whether to transition from
-     * SHUTDOWN to TIDYING).  This accommodates special-purpose
-     * queues such as DelayQueues for which poll() is allowed to
-     * return null even if it may later return non-null when delays
-     * expire.
-     */
+
     private final BlockingQueue<Runnable> workQueue;
 
-    /**
-     * Lock held on access to workers set and related bookkeeping.
-     * While we could use a concurrent set of some sort, it turns out
-     * to be generally preferable to use a lock. Among the reasons is
-     * that this serializes interruptIdleWorkers, which avoids
-     * unnecessary interrupt storms, especially during shutdown.
-     * Otherwise exiting threads would concurrently interrupt those
-     * that have not yet interrupted. It also simplifies some of the
-     * associated statistics bookkeeping of largestPoolSize etc. We
-     * also hold mainLock on shutdown and shutdownNow, for the sake of
-     * ensuring workers set is stable while separately checking
-     * permission to interrupt and actually interrupting.
-     */
     private final ReentrantLock mainLock = new ReentrantLock();
 
-    /**
-     * Set containing all worker threads in pool. Accessed only when
-     * holding mainLock.
-     */
     private final HashSet<SThreadPoolExecutor.Worker> workers = new HashSet<>();
 
-    /**
-     * Wait condition to support awaitTermination
-     */
     private final Condition termination = mainLock.newCondition();
 
-    /**
-     * Tracks largest attained pool size. Accessed only under
-     * mainLock.
-     */
     private int largestPoolSize;
 
-    /**
-     * Counter for completed tasks. Updated only on termination of
-     * worker threads. Accessed only under mainLock.
-     */
     private long completedTaskCount;
 
-    /*
-     * All user control parameters are declared as volatiles so that
-     * ongoing actions are based on freshest values, but without need
-     * for locking, since no internal invariants depend on them
-     * changing synchronously with respect to other actions.
-     */
-
-    /**
-     * Factory for new threads. All threads are created using this
-     * factory (via method addWorker).  All callers must be prepared
-     * for addWorker to fail, which may reflect a system or user's
-     * policy limiting the number of threads.  Even though it is not
-     * treated as an error, failure to create threads may result in
-     * new tasks being rejected or existing ones remaining stuck in
-     * the queue.
-     *
-     * We go further and preserve pool invariants even in the face of
-     * errors such as OutOfMemoryError, that might be thrown while
-     * trying to create threads.  Such errors are rather common due to
-     * the need to allocate a native stack in Thread.start, and users
-     * will want to perform clean pool shutdown to clean up.  There
-     * will likely be enough memory available for the cleanup code to
-     * complete without encountering yet another OutOfMemoryError.
-     */
     private volatile ThreadFactory threadFactory;
 
-    /**
-     * Handler called when saturated or shutdown in execute.
-     */
     private volatile SRejectedExecutionHandler handler;
 
-    /**
-     * Timeout in nanoseconds for idle threads waiting for work.
-     * Threads use this timeout when there are more than corePoolSize
-     * present or if allowCoreThreadTimeOut. Otherwise they wait
-     * forever for new work.
-     */
     private volatile long keepAliveTime;
 
-    /**
-     * If false (default), core threads stay alive even when idle.
-     * If true, core threads use keepAliveTime to time out waiting
-     * for work.
-     */
     private volatile boolean allowCoreThreadTimeOut;
 
-    /**
-     * Core pool size is the minimum number of workers to keep alive
-     * (and not allow to time out etc) unless allowCoreThreadTimeOut
-     * is set, in which case the minimum is zero.
-     */
     private volatile int corePoolSize;
 
-    /**
-     * Maximum pool size. Note that the actual maximum is internally
-     * bounded by CAPACITY.
-     */
     private volatile int maximumPoolSize;
 
-    /**
-     * The default rejected execution handler
-     */
     private static final SRejectedExecutionHandler defaultHandler =
             new SThreadPoolExecutor.AbortPolicy();
 
-    /**
-     * Permission required for callers of shutdown and shutdownNow.
-     * We additionally require (see checkShutdownAccess) that callers
-     * have permission to actually interrupt threads in the worker set
-     * (as governed by Thread.interrupt, which relies on
-     * ThreadGroup.checkAccess, which in turn relies on
-     * SecurityManager.checkAccess). Shutdowns are attempted only if
-     * these checks pass.
-     *
-     * All actual invocations of Thread.interrupt (see
-     * interruptIdleWorkers and interruptWorkers) ignore
-     * SecurityExceptions, meaning that the attempted interrupts
-     * silently fail. In the case of shutdown, they should not fail
-     * unless the SecurityManager has inconsistent policies, sometimes
-     * allowing access to a thread and sometimes not. In such cases,
-     * failure to actually interrupt threads may disable or delay full
-     * termination. Other uses of interruptIdleWorkers are advisory,
-     * and failure to actually interrupt will merely delay response to
-     * configuration changes so is not handled exceptionally.
-     */
     private static final RuntimePermission shutdownPerm =
             new RuntimePermission("modifyThread");
 
-    /* The context to be used when executing the finalizer, or null. */
     private final AccessControlContext acc;
 
-    /**
-     * Class Worker mainly maintains interrupt control state for
-     * threads running tasks, along with other minor bookkeeping.
-     * This class opportunistically extends AbstractQueuedSynchronizer
-     * to simplify acquiring and releasing a lock surrounding each
-     * task execution.  This protects against interrupts that are
-     * intended to wake up a worker thread waiting for a task from
-     * instead interrupting a task being run.  We implement a simple
-     * non-reentrant mutual exclusion lock rather than use
-     * ReentrantLock because we do not want worker tasks to be able to
-     * reacquire the lock when they invoke pool control methods like
-     * setCorePoolSize.  Additionally, to suppress interrupts until
-     * the thread actually starts running tasks, we initialize lock
-     * state to a negative value, and clear it upon start (in
-     * runWorker).
-     */
     private final class Worker
             extends AbstractQueuedSynchronizer
             implements Runnable
     {
-        /**
-         * This class will never be serialized, but we provide a
-         * serialVersionUID to suppress a javac warning.
-         */
         private static final long serialVersionUID = 6138294804551838833L;
 
-        /** Thread this worker is running in.  Null if factory fails. */
         final Thread thread;
-        /** Initial task to run.  Possibly null. */
+
         Runnable firstTask;
-        /** Per-thread task counter */
+
         volatile long completedTasks;
 
-        /**
-         * Creates with given first task and thread from ThreadFactory.
-         * @param firstTask the first task (null if none)
-         */
         Worker(Runnable firstTask) {
             setState(-1); // inhibit interrupts until runWorker
             this.firstTask = firstTask;
             this.thread = getThreadFactory().newThread(this);
         }
 
-        /** Delegates main run loop to outer runWorker  */
         public void run() {
             runWorker(this);
         }
-
-        // Lock methods
-        //
-        // The value 0 represents the unlocked state.
-        // The value 1 represents the locked state.
 
         protected boolean isHeldExclusively() {
             return getState() != 0;
@@ -353,17 +152,6 @@ public class SThreadPoolExecutor extends SAbstractExecutorService {
         }
     }
 
-    /*
-     * Methods for setting control state
-     */
-
-    /**
-     * Transitions runState to given target, or leaves it alone if
-     * already at least the given target.
-     *
-     * @param targetState the desired state, either SHUTDOWN or STOP
-     *        (but not TIDYING or TERMINATED -- use tryTerminate for that)
-     */
     private void advanceRunState(int targetState) {
         for (;;) {
             int c = ctl.get();
@@ -373,16 +161,6 @@ public class SThreadPoolExecutor extends SAbstractExecutorService {
         }
     }
 
-    /**
-     * Transitions to TERMINATED state if either (SHUTDOWN and pool
-     * and queue empty) or (STOP and pool empty).  If otherwise
-     * eligible to terminate but workerCount is nonzero, interrupts an
-     * idle worker to ensure that shutdown signals propagate. This
-     * method must be called following any action that might make
-     * termination possible -- reducing worker count or removing tasks
-     * from the queue during shutdown. The method is non-private to
-     * allow access from ScheduledThreadPoolExecutor.
-     */
     final void tryTerminate() {
         for (;;) {
             int c = ctl.get();
@@ -414,18 +192,6 @@ public class SThreadPoolExecutor extends SAbstractExecutorService {
         }
     }
 
-    /*
-     * Methods for controlling interrupts to worker threads.
-     */
-
-    /**
-     * If there is a security manager, makes sure caller has
-     * permission to shut down threads in general (see shutdownPerm).
-     * If this passes, additionally makes sure the caller is allowed
-     * to interrupt each worker thread. This might not be true even if
-     * first check passed, if the SecurityManager treats some threads
-     * specially.
-     */
     private void checkShutdownAccess() {
         SecurityManager security = System.getSecurityManager();
         if (security != null) {

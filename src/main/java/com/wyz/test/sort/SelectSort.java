@@ -7,6 +7,9 @@ import java.util.Arrays;
 import java.util.Random;
 
 public class SelectSort {
+    /**
+     * 选择排序
+     */
     private static void selectTest() {
         final Integer[] array = new Integer[20];
         Random random = new Random();
